@@ -134,14 +134,24 @@ def build_grid_data(
 
 
 def render_html(data: dict, standalone: bool = True) -> str:
-    """Render grid data as a self-contained HTML page (no external assets)."""
+    """Render grid data as a self-contained HTML page (no external assets).
+
+    The standalone page commits to the dark theme (``data-theme="dark"`` +
+    ``color-scheme: dark``): it is a local debugging surface, and declaring
+    the scheme also stops browsers' "auto dark" filters from repainting it
+    with artifact borders. The non-standalone body (used for artifacts) stays
+    theme-adaptive via the CSS tokens.
+    """
     body = _render_body(data)
     if not standalone:
         return body
     return (
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-        "<title>Horizon lens — timestep × horizon grid</title>\n</head>\n<body>\n"
+        '<!doctype html>\n<html lang="en" data-theme="dark">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta name="color-scheme" content="dark">\n'
+        "<title>Horizon lens — timestep × horizon grid</title>\n"
+        f"<style>{_DARK_PAGE_CSS}</style>\n</head>\n<body>\n"
         f"{body}\n</body>\n</html>\n"
     )
 
@@ -224,11 +234,13 @@ def render_app_shell(config: dict) -> str:
     )
     payload = json.dumps(config)
     return f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>Horizon lens — live viewer</title>
+<style>{_DARK_PAGE_CSS}</style>
 </head>
 <body>
 <style>{_CSS}{_APP_CSS}</style>
@@ -345,6 +357,14 @@ tbody th {{ position: sticky; left: 0; background: var(--surface); }}
 #tooltip table {{ border-spacing: 0; }}
 #tooltip td {{ padding: 1px 6px 1px 0; }}
 #tooltip .p {{ font-variant-numeric: tabular-nums; color: var(--ink-2); text-align: right; }}
+"""
+
+# Local standalone/app pages only (artifacts get their host's frame): kill
+# the default body margin so no white frame shows, paint the whole viewport
+# black, and let the grid span the full width.
+_DARK_PAGE_CSS = """
+html, body { margin: 0; padding: 0; background: #0d0d0d; }
+.viz-root { min-height: 100vh; box-sizing: border-box; }
 """
 
 _APP_CSS = """
