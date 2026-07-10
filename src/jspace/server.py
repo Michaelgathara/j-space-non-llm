@@ -26,12 +26,31 @@ from jspace.lens import HorizonLens
 from jspace.model import LSTMLanguageModel, load_checkpoint
 from jspace.viz import build_grid_data, render_app_shell
 
-DEFAULT_PROMPT = (
-    "BAPTISTA : It likes me well . Biondello , hie you home , "
-    "And bid Bianca make her ready straight ;"
-)
-ALL_BLOCKS = ["state", "h_top", "c1", "h0", "c0"]
+DEFAULT_PROMPTS = {
+    "tinystories": (
+        "Once upon a time , there was a little girl named Lily . "
+        "She had a red ball that she loved to play with ."
+    ),
+    "tinyshakespeare": (
+        "BAPTISTA : It likes me well . Biondello , hie you home , "
+        "And bid Bianca make her ready straight ;"
+    ),
+}
 MAX_PROMPT_TOKENS = 256
+
+
+def block_names(lens: HorizonLens) -> list[str]:
+    """UI/eval block order: full state, then hidden blocks top-down, then
+    cell blocks top-down."""
+    layers = sorted(
+        int(name[1:]) for name in lens.blocks if name[0] == "h" and name != "h_top"
+    )
+    tops_first = sorted(layers, reverse=True)
+    return (
+        ["state"]
+        + [f"h{i}" for i in tops_first]
+        + [f"c{i}" for i in tops_first]
+    )
 
 
 @dataclass
@@ -43,13 +62,15 @@ class LensApp:
     vocab: Vocab
     token_counts: Tensor
     device: str
+    corpus_name: str = "tinystories"
 
     @classmethod
     def from_run_dir(cls, run_dir: str, device: str | None = None) -> LensApp:
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         paths = Paths(run_dir=run_dir)
-        corpus = Corpus.load(paths.corpus_file)
-        model = load_checkpoint(paths.checkpoint, device)
+        model, payload = load_checkpoint(paths.checkpoint, device)
+        corpus_name = payload.get("corpus", "tinystories")
+        corpus = Corpus.load(corpus_name, paths.data_dir)
         lens = HorizonLens.load(paths.lens_file, device=device)
         lens.transports = lens.transports.to(device)
         return cls(
@@ -58,17 +79,19 @@ class LensApp:
             vocab=corpus.vocab,
             token_counts=torch.bincount(corpus.train_ids, minlength=len(corpus.vocab)),
             device=device,
+            corpus_name=corpus_name,
         )
 
     def config(self) -> dict:
+        blocks = block_names(self.lens)
         return {
             "model": self.lens.model_config,
             "max_horizon": self.lens.max_horizon,
-            "blocks": ALL_BLOCKS,
-            "default_blocks": ["state", "h_top", "c1"],
+            "blocks": blocks,
+            "default_blocks": blocks[:4],
             "default_horizon": min(8, self.lens.max_horizon),
             "default_min_token_count": 5,
-            "default_prompt": DEFAULT_PROMPT,
+            "default_prompt": DEFAULT_PROMPTS.get(self.corpus_name, ""),
             "device": self.device,
         }
 
@@ -81,7 +104,7 @@ class LensApp:
         if len(words) > MAX_PROMPT_TOKENS:
             raise ValueError(f"prompt too long ({len(words)} > {MAX_PROMPT_TOKENS} tokens)")
 
-        blocks = [b for b in params.get("blocks", []) if b in ALL_BLOCKS]
+        blocks = [b for b in params.get("blocks", []) if b in block_names(self.lens)]
         if not blocks:
             raise ValueError("no valid blocks selected")
 

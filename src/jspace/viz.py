@@ -79,8 +79,18 @@ def build_grid_data(
     lens_logits, model_logits = lens.apply(
         model, token_ids, blocks, horizons, mode="centered"
     )
+    states, _ = model.logits_over_sequence(token_ids)
     tokens = vocab.decode(token_ids)
     T = len(tokens)
+
+    def depth_row_logits(block: str):
+        """Horizon-0 depth lens (a hidden block's direct contribution to the
+        current logits), where the architecture defines it."""
+        if block == "state" or not block.startswith("h"):
+            return None
+        if not model.cfg.residual and lens.blocks[block] != lens.blocks["h_top"]:
+            return None
+        return lens.readout(model, states, block, 0, mode="centered")
 
     mask = None
     if min_token_count > 0:
@@ -115,10 +125,26 @@ def build_grid_data(
     sections = []
     for block in blocks:
         rows = []
-        if lens.blocks.get(block) == lens.blocks["h_top"]:
-            rows.append({"k": 0, "cells": cells_from_logits(model_logits, horizon=0)})
+        if block == "state":
+            rows.append({
+                "k": 0,
+                "label": "k=0 (model)",
+                "cells": cells_from_logits(model_logits, horizon=0),
+            })
+        else:
+            depth_logits = depth_row_logits(block)
+            if depth_logits is not None:
+                rows.append({
+                    "k": 0,
+                    "label": "k=0 (direct)",
+                    "cells": cells_from_logits(depth_logits, horizon=0),
+                })
         for k in horizons:
-            rows.append({"k": k, "cells": cells_from_logits(lens_logits[(block, k)], k)})
+            rows.append({
+                "k": k,
+                "label": f"k={k}",
+                "cells": cells_from_logits(lens_logits[(block, k)], k),
+            })
         section = {"block": block, "rows": rows}
         _assign_percentile_bins(section)
         sections.append(section)
@@ -192,7 +218,7 @@ def _render_section(section: dict, tokens: list[str]) -> str:
     )
     rows_html = []
     for r, row in enumerate(section["rows"]):
-        label = "k=0 (model)" if row["k"] == 0 else f"k={row['k']}"
+        label = row.get("label", f"k={row['k']}")
         cells = "".join(
             _render_cell(cell, section["block"], r, c)
             for c, cell in enumerate(row["cells"])
@@ -474,7 +500,7 @@ _APP_JS = """
         const tr = document.createElement("tr");
         const th = document.createElement("th");
         th.scope = "row";
-        th.textContent = row.k === 0 ? "k=0 (model)" : "k=" + row.k;
+        th.textContent = row.label || "k=" + row.k;
         tr.append(th);
         row.cells.forEach((cell, c) => {
           const td = document.createElement("td");
