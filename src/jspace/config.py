@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 
@@ -12,11 +12,17 @@ class ModelConfig:
 
     vocab_size: int
     d_model: int = 256
-    num_layers: int = 2
+    num_layers: int = 4
     dropout: float = 0.3
     # Tie unembedding to the input embedding: standard for word-level LMs on
     # small corpora, and halves the (dominant) embedding parameter count.
     tie_embeddings: bool = True
+    # Residual connections between layers: x_{l+1} = x_l + h_l. Besides
+    # making depth trainable, this creates a residual stream across layers —
+    # the structure the transformer J-lens reads — so each layer's hidden
+    # state has a *direct*, decodable contribution to the logits (the k=0
+    # depth lens).
+    residual: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -79,8 +85,6 @@ class Paths:
 
     data_dir: str = "data"
     run_dir: str = "runs/default"
-
-    corpus_file: str = field(default="data/tinyshakespeare.txt", init=False)
 
     @property
     def checkpoint(self) -> str:
