@@ -27,6 +27,7 @@ from jspace.config import Paths
 from jspace.data import Corpus, sample_batch
 from jspace.lens import HorizonLens
 from jspace.model import load_checkpoint
+from jspace.server import block_names
 
 
 def print_table(title: str, values: dict[tuple[str, int], float], blocks, horizons):
@@ -45,18 +46,21 @@ def main() -> None:
     parser.add_argument(
         "--blocks",
         nargs="+",
-        default=["state", "h_top", "c1", "h0", "c0"],
-        help='"state" is the full-state readout; named blocks isolate components',
+        default=None,
+        help='"state" is the full-state readout; named blocks isolate components '
+        "(default: state + all h and c blocks, top-down)",
     )
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     paths = Paths(run_dir=args.run_dir)
-    corpus = Corpus.load(paths.corpus_file)
-    model = load_checkpoint(paths.checkpoint, device)
+    model, payload = load_checkpoint(paths.checkpoint, device)
+    corpus = Corpus.load(payload.get("corpus", "tinystories"), paths.data_dir)
     lens = HorizonLens.load(paths.lens_file, device=device)
     lens.transports = lens.transports.to(device)
+    if args.blocks is None:
+        args.blocks = block_names(lens)
 
     generator = torch.Generator().manual_seed(args.seed)
     windows, _ = sample_batch(

@@ -20,15 +20,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", default="runs/default")
     parser.add_argument("--max-horizon", type=int, default=16)
-    parser.add_argument("--num-sequences", type=int, default=128)
+    parser.add_argument("--num-sequences", type=int, default=48)
     parser.add_argument("--seq-len", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     paths = Paths(run_dir=args.run_dir)
-    corpus = Corpus.load(paths.corpus_file)
-    model = load_checkpoint(paths.checkpoint, device)
+    model, payload = load_checkpoint(paths.checkpoint, device)
+    corpus = Corpus.load(payload.get("corpus", "tinystories"), paths.data_dir)
 
     cfg = FitConfig(
         max_horizon=args.max_horizon,

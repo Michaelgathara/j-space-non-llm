@@ -44,10 +44,14 @@ def evaluate(model, ids, cfg: TrainConfig, generator, device) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", default="runs/default")
-    parser.add_argument("--d-model", type=int, default=128)
-    parser.add_argument("--num-layers", type=int, default=2)
-    parser.add_argument("--dropout", type=float, default=0.5)
-    parser.add_argument("--max-steps", type=int, default=10_000)
+    parser.add_argument(
+        "--corpus", default="tinystories", choices=["tinystories", "tinyshakespeare"]
+    )
+    parser.add_argument("--d-model", type=int, default=256)
+    parser.add_argument("--num-layers", type=int, default=4)
+    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--no-residual", action="store_true")
+    parser.add_argument("--max-steps", type=int, default=20_000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=0)
@@ -57,7 +61,7 @@ def main() -> None:
     torch.manual_seed(args.seed)
 
     paths = Paths(run_dir=args.run_dir)
-    corpus = Corpus.load(paths.corpus_file)
+    corpus = Corpus.load(args.corpus, paths.data_dir)
     print(f"vocab={len(corpus.vocab)} train_tokens={len(corpus.train_ids)} device={device}")
 
     model_cfg = ModelConfig(
@@ -65,6 +69,7 @@ def main() -> None:
         d_model=args.d_model,
         num_layers=args.num_layers,
         dropout=args.dropout,
+        residual=not args.no_residual,
     )
     train_cfg = TrainConfig(
         max_steps=args.max_steps,
@@ -110,7 +115,11 @@ def main() -> None:
             if val < best_val:
                 best_val = val
                 torch.save(
-                    {"model": model.state_dict(), "config": model_cfg.to_dict()},
+                    {
+                        "model": model.state_dict(),
+                        "config": model_cfg.to_dict(),
+                        "corpus": args.corpus,
+                    },
                     paths.checkpoint,
                 )
 

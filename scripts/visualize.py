@@ -18,6 +18,7 @@ from jspace.config import Paths
 from jspace.data import Corpus, tokenize
 from jspace.lens import HorizonLens
 from jspace.model import load_checkpoint
+from jspace.server import block_names
 from jspace.viz import build_grid_data, render_html
 
 
@@ -28,7 +29,8 @@ def main() -> None:
     parser.add_argument("--val-offset", type=int, default=0, help="window start in val split")
     parser.add_argument("--num-tokens", type=int, default=48)
     parser.add_argument(
-        "--blocks", nargs="+", default=["state", "h_top", "c1", "h0", "c0"]
+        "--blocks", nargs="+", default=None,
+        help="state blocks to render (default: state + all h and c blocks, top-down)",
     )
     parser.add_argument("--max-horizon", type=int, default=8)
     parser.add_argument(
@@ -42,8 +44,8 @@ def main() -> None:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     paths = Paths(run_dir=args.run_dir)
-    corpus = Corpus.load(paths.corpus_file)
-    model = load_checkpoint(paths.checkpoint, device)
+    model, payload = load_checkpoint(paths.checkpoint, device)
+    corpus = Corpus.load(payload.get("corpus", "tinystories"), paths.data_dir)
     lens = HorizonLens.load(paths.lens_file, device=device)
 
     if args.max_horizon > lens.max_horizon:
@@ -55,12 +57,13 @@ def main() -> None:
         token_ids = corpus.val_ids[args.val_offset : args.val_offset + args.num_tokens]
     token_ids = token_ids.to(device)
 
+    blocks = args.blocks or block_names(lens)
     data = build_grid_data(
         model,
         lens,
         corpus.vocab,
         token_ids,
-        args.blocks,
+        blocks,
         args.max_horizon,
         min_token_count=args.min_token_count,
         token_counts=torch.bincount(corpus.train_ids, minlength=len(corpus.vocab)),
