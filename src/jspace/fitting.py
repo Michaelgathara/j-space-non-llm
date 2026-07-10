@@ -6,16 +6,18 @@ For a sequence with recurrent states s_0, s_1, ..., s_T the one-step Jacobian
 
 is computed exactly with ``torch.func.jacrev`` through the model's
 ``step_flat`` (the consumed token is held fixed, so A_t is well-defined under
-teacher forcing). The horizon-k transport from source position t is then the
-chained product restricted to the rows of the top hidden block:
+teacher forcing). The horizon-k transport from source position t is the
+chained product projected through the model's constant readout matrix R
+(pre_logits = x_emb + R s; R selects h_top for a plain stack, or sums all h
+blocks for a residual stream):
 
-    d h_top(t+k) / d s(t) = [A_{t+k} · A_{t+k-1} · ... · A_{t+1}]_{h_top rows}
+    d pre_logits(t+k) / d s(t) = R · A_{t+k} · A_{t+k-1} · ... · A_{t+1}
 
 Rather than materializing full products, we iterate over *target* positions
-tau and right-multiply the (d_model x state_size) row slice through a ring
-buffer of the last K one-step Jacobians:
+tau and right-multiply the (d_model x state_size) projected slice through a
+ring buffer of the last K one-step Jacobians:
 
-    V_1 = A_tau[h_top, :],   V_j = V_{j-1} @ A_{tau-j+1}
+    V_1 = R @ A_tau,   V_j = V_{j-1} @ A_{tau-j+1}
 
 so each target position contributes one exact sample to every horizon
 k = 1..K at cost O(K * d_model * state_size^2). Samples are averaged over
@@ -55,7 +57,7 @@ def fit_lens_on_sequences(
     """
     model = model.eval()
     device = model.embed.weight.device
-    top = model.block_slices()["h_top"]
+    readout = model.readout_state_matrix()
     d, s_size, k_max = model.cfg.d_model, model.state_size, cfg.max_horizon
 
     sums = torch.zeros(k_max, d, s_size, device=device)
@@ -81,7 +83,7 @@ def fit_lens_on_sequences(
             ring.appendleft(one_step_jacobian(model, states[tau - 1], emb[tau - 1]))
 
             with torch.no_grad():
-                v = ring[0][top, :]
+                v = readout @ ring[0]
                 for k in range(1, len(ring) + 1):
                     if k > 1:
                         v = v @ ring[k - 1]

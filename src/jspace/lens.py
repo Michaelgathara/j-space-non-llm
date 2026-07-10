@@ -108,16 +108,38 @@ class HorizonLens:
         """Disposition logits for states (..., state_size) -> (..., vocab).
 
         ``mode`` is one of "centered", "taylor", "raw" (see class docstring).
-        ``horizon=0`` is supported for the top hidden block only, where it is
-        the plain logit lens (the model's own output, mode-independent).
+
+        ``horizon=0`` is the *depth* lens: a hidden block's direct, additive
+        contribution to the current logits through the residual stream
+        (``W_U h_l``), the recurrent analog of the transformer logit lens per
+        layer. It is defined for every h-block of a residual model, but only
+        for ``h_top`` of a plain stack (lower layers of a plain stack have no
+        direct route to the output). Cell blocks and "state" have no
+        horizon-0 readout (a cell influences the logits only through future
+        steps; "state" at k=0 is just the model's own output — read that from
+        ``apply``).
         """
         self._check_model(model)
         if mode not in ("centered", "taylor", "raw"):
             raise ValueError(f"unknown readout mode: {mode!r}")
         if horizon == 0:
-            if block != "h_top" and self.blocks.get(block) != self.blocks["h_top"]:
-                raise ValueError("horizon=0 is only defined for the top hidden block")
-            return model.logits_from_state(states)
+            is_h_block = block == "h_top" or (
+                block.startswith("h") and block in self.blocks
+            )
+            if not is_h_block:
+                raise ValueError("horizon=0 is only defined for hidden (h) blocks")
+            if not model.cfg.residual and self.blocks[block] != self.blocks["h_top"]:
+                raise ValueError(
+                    "horizon=0 below the top layer requires a residual model"
+                )
+            blk = self._block(block)
+            values = states[..., blk]
+            if mode != "raw":
+                values = values - self.mean_state.to(values.device)[blk]
+            logits = values @ model.unembed.weight.detach().T
+            if mode == "taylor":
+                logits = logits + self.mean_logits.to(logits.device)
+            return logits
         blk = self._block(block)
         values = states[..., blk]
         if mode != "raw":
@@ -147,8 +169,7 @@ class HorizonLens:
             model_logits: (T, vocab), the model's actual output logits.
         """
         self._check_model(model)
-        states = model.states_over_sequence(token_ids)[1:]  # drop zero initial state
-        model_logits = model.logits_from_state(states)
+        states, model_logits = model.logits_over_sequence(token_ids)
         lens_logits = {
             (block, k): self.readout(model, states, block, k, mode=mode)
             for block in blocks
