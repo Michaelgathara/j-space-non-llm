@@ -3,7 +3,9 @@
 A port of Anthropic's **Jacobian lens / J-space** interpretability technique
 ([*Verbalizable Representations Form a Global Workspace in Language Models*](https://transformer-circuits.pub/2026/workspace/),
 [reference code](https://github.com/anthropics/jacobian-lens)) from transformers
-to recurrent architectures, demonstrated on a word-level LSTM language model.
+to recurrent architectures — demonstrated on a **residual 4-layer word-level
+LSTM** trained on TinyStories, where the lens gets *two* axes: the
+transformer's depth axis and a time-horizon axis transformers don't have.
 
 ## The idea
 
@@ -62,8 +64,21 @@ and sequences. No approximations; a test verifies the chained result against
 direct autograd through the k-step unrolled map, and the fitted average against
 a brute-force reference.
 
-`k = 0` on the top hidden block is the ordinary logit lens (`W_U h_top`) and
-needs no transport.
+### The depth axis (k = 0)
+
+The model's layers are wired through a residual stream across depth
+(`x_{ℓ+1} = x_ℓ + h_ℓ`, logits read `W_U Σ_ℓ h_ℓ`), so every layer's hidden
+state writes *directly and additively* into the output — the same structure
+the transformer J-lens exploits. That makes the k = 0 depth lens exact and
+transport-free: `W_U h_ℓ` is layer ℓ's direct contribution to the current
+logits, the recurrent analog of the per-layer logit lens. Together with the
+horizon transports this yields a 2D lens: depth at k = 0, time for k ≥ 1
+(with per-block column slices giving depth *within* each horizon too).
+
+The input embedding is deliberately excluded from the readout: with tied
+embeddings, `W_U embed(w)` hands every token a `‖e_w‖²` self-logit at
+initialization — an "echo the input" trap (empirically ~12 points of initial
+loss) the model would first have to unlearn.
 
 ### Readout modes
 
@@ -89,18 +104,19 @@ python -m venv .venv && .venv/Scripts/activate    # or source .venv/bin/activate
 pip install -e ".[dev]"
 pytest                                            # 14 tests, a few seconds
 
-python scripts/train.py                           # word-level Tiny Shakespeare LSTM
-python scripts/fit_lens.py                        # fit J_k for k = 1..16 (~90s on GPU)
+python scripts/train.py                           # residual 4-layer LSTM on TinyStories
+python scripts/fit_lens.py                        # fit J_k for k = 1..16 (~60s on GPU)
 python scripts/evaluate_lens.py                   # agreement vs the model's own future
-python scripts/visualize.py                       # static timestep × horizon HTML grid
+python scripts/visualize.py                       # static depth × horizon HTML grid
 python scripts/serve.py                           # live viewer at http://127.0.0.1:8731/
 ```
 
-Artifacts land in `runs/default/` (`model.pt`, `lens.pt`, `viz.html`). The
-corpus (~1.1 MB) downloads to `data/` on first use. Word-level tokenization is
-deliberate: the lens decodes into vocabulary space, and the J-space
-construction is only interesting when the token dictionary is overcomplete
-relative to the model dimension (vocab ≈ 12.7k ≫ d_model = 256).
+Artifacts land in `runs/default/` (`model.pt`, `lens.pt`, `viz.html`). A 25 MB
+slice of TinyStories (~5.8M words) downloads to `data/` on first use
+(`--corpus tinyshakespeare` for the original small corpus). Word-level
+tokenization is deliberate: the lens decodes into vocabulary space, and the
+J-space construction is only interesting when the token dictionary is
+overcomplete relative to the model dimension (vocab ≈ 9.7k ≫ d_model = 256).
 
 ## Visualization
 
@@ -146,19 +162,22 @@ scripts/            train.py, fit_lens.py, evaluate_lens.py, visualize.py
 tests/              step parity, Jacobian correctness, lens semantics
 ```
 
-## First results (Tiny Shakespeare LSTM, d=128, 2 layers)
+## First results (TinyStories, residual 4-layer LSTM, d=256, val ppl 11.3)
 
-- **Memory-decay profile**: `‖J_k‖` drops sharply k=1→2 then decays ever more
-  slowly (per-step retention 0.37 → 0.92 by k=16) — a protected long-lived
-  subspace in the recurrent state.
-- **Agreement with the model's own future** (taylor mode, top-5): 0.60 at k=1
-  vs a 0.44 zeroth-order baseline, decaying to baseline by k≈16 in step with
-  the transport contraction. The lens's information lives in the ranking; the
-  argmax is dominated by the constant term.
-- **The cell state is where the workspace lives**: the one-step signal routes
-  through `c1` (the top cell), not `h1` — and at long horizons the *layer-0
-  cell* `c0` retains excess agreement longest. The hidden states are the
-  scratch I/O; the cells are the protected memory.
+- **A capable model transports far more**: `‖J_k‖` at k=16 retains 0.74 of
+  usable norm vs 0.046 for a weak 2-layer Shakespeare model — an order of
+  magnitude more information survives long transport, with per-step retention
+  rising toward ~0.96 (a protected long-lived subspace).
+- **Agreement with the model's own future** (taylor mode): the full-state
+  readout matches the model's top-1 output at 22.5% at k=1 (4.7× the
+  zeroth-order baseline) and still beats baseline at k=16 (7.9% vs 4.8%).
+- **Hidden states are short-lived I/O; the workspace lives in the cells**:
+  every h-block collapses to baseline agreement by k≈3, while the *layer-1
+  cell* `c1` tracks the full state's long-horizon agreement almost exactly —
+  the protected memory concentrates in one middle cell block.
+- **Depth is U-shaped at short horizons**: at k=1, the bottom layer's hidden
+  state (`h0`, 15.3%) out-predicts the top (`h3`, 12.7%), with the middle
+  (`h2`, 8.2%) weakest.
 
 ## What this is not
 
