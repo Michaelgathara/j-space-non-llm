@@ -16,13 +16,13 @@ from jspace.model import LSTMLanguageModel
 def unrolled_jacobian(
     model: LSTMLanguageModel, states: torch.Tensor, emb: torch.Tensor, t: int, k: int
 ) -> torch.Tensor:
-    """d h_top(t+k) / d s(t) via autograd through the k-step unrolled map."""
-    top = model.block_slices()["h_top"]
+    """d pre_logits(t+k) / d s(t) via autograd through the k-step unrolled map."""
+    readout = model.readout_state_matrix()
 
     def unroll(s: torch.Tensor) -> torch.Tensor:
         for i in range(t + 1, t + k + 1):
             s = model.step_flat(s, emb[i - 1])
-        return s[top]
+        return readout @ s
 
     return jacrev(unroll)(states[t]).detach()
 
@@ -39,10 +39,10 @@ def test_chained_equals_unrolled(tiny_model, tokens):
     with torch.no_grad():
         emb = tiny_model.embed(tokens)
     states = tiny_model.states_over_sequence(tokens)
-    top = tiny_model.block_slices()["h_top"]
+    readout = tiny_model.readout_state_matrix()
 
     t, k = 3, 4
-    chain = chained_transport(tiny_model, states, emb, t, k)[top, :]
+    chain = readout @ chained_transport(tiny_model, states, emb, t, k)
     direct = unrolled_jacobian(tiny_model, states, emb, t, k)
     torch.testing.assert_close(chain, direct, rtol=1e-4, atol=1e-5)
 

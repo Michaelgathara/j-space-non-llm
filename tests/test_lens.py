@@ -33,12 +33,25 @@ def test_save_load_roundtrip(fitted, tmp_path):
     assert loaded.fit_config == fitted.fit_config
 
 
-def test_horizon_zero_is_logit_lens(fitted, tiny_model, tokens):
+def test_horizon_zero_is_depth_lens(fitted, tiny_model, tokens):
+    """k=0 reads a hidden block's direct residual-stream contribution W_U h_l."""
     states = tiny_model.states_over_sequence(tokens)[1:]
-    readout = fitted.readout(tiny_model, states, "h_top", horizon=0)
-    torch.testing.assert_close(readout, tiny_model.logits_from_state(states))
-    with pytest.raises(ValueError, match="top hidden block"):
+    for block in ("h_top", "h0"):
+        start, stop = fitted.blocks[block]
+        expected = states[:, start:stop] @ tiny_model.unembed.weight.detach().T
+        readout = fitted.readout(tiny_model, states, block, horizon=0, mode="raw")
+        torch.testing.assert_close(readout, expected)
+    with pytest.raises(ValueError, match="hidden"):
         fitted.readout(tiny_model, states, "c0", horizon=0)
+    with pytest.raises(ValueError, match="hidden"):
+        fitted.readout(tiny_model, states, "state", horizon=0)
+
+
+def test_apply_model_logits_match_forward(fitted, tiny_model, tokens):
+    _, model_logits = fitted.apply(tiny_model, tokens, blocks=["c0"], horizons=[1])
+    torch.testing.assert_close(
+        model_logits, tiny_model(tokens[None])[0], rtol=1e-5, atol=1e-5
+    )
 
 
 def test_readout_matches_lens_matrix(fitted, tiny_model, tokens):
