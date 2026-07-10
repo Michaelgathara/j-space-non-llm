@@ -16,9 +16,26 @@ from pathlib import Path
 
 import torch
 
-CORPUS_URL = (
-    "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-)
+
+@dataclass(frozen=True)
+class CorpusSpec:
+    url: str
+    # Cap the download (HTTP Range) — TinyStories is ~2GB; a slice of a few
+    # tens of MB is already 10-20x more tokens than all of Tiny Shakespeare.
+    max_bytes: int | None = None
+
+
+CORPORA: dict[str, CorpusSpec] = {
+    "tinyshakespeare": CorpusSpec(
+        url="https://raw.githubusercontent.com/karpathy/char-rnn/master/"
+        "data/tinyshakespeare/input.txt",
+    ),
+    "tinystories": CorpusSpec(
+        url="https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/"
+        "TinyStories-train.txt",
+        max_bytes=25 * 1024 * 1024,
+    ),
+}
 
 UNK = "<unk>"
 
@@ -32,13 +49,21 @@ def tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text)
 
 
-def download_corpus(path: str | Path) -> str:
-    """Return the corpus text, downloading and caching it at ``path``."""
-    path = Path(path)
+def download_corpus(name: str, data_dir: str | Path = "data") -> str:
+    """Return corpus text, downloading and caching it at ``data_dir/{name}.txt``."""
+    spec = CORPORA[name]
+    path = Path(data_dir) / f"{name}.txt"
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(CORPUS_URL, timeout=60) as resp:
-            text = resp.read().decode("utf-8")
+        request = urllib.request.Request(spec.url)
+        if spec.max_bytes is not None:
+            request.add_header("Range", f"bytes=0-{spec.max_bytes - 1}")
+        with urllib.request.urlopen(request, timeout=120) as resp:
+            raw = resp.read(spec.max_bytes) if spec.max_bytes else resp.read()
+        # A Range slice may end mid-line; drop the final partial line.
+        text = raw.decode("utf-8", errors="ignore")
+        if spec.max_bytes is not None and len(raw) >= spec.max_bytes:
+            text = text[: text.rfind("\n")]
         path.write_text(text, encoding="utf-8")
     return path.read_text(encoding="utf-8")
 
@@ -65,13 +90,18 @@ class Vocab:
         return [self.id_to_token[int(i)] for i in ids]
 
     @classmethod
-    def build(cls, tokens: list[str]) -> Vocab:
+    def build(cls, tokens: list[str], min_count: int = 1) -> Vocab:
         # Sorted by frequency for readability of the vocab file; determinism
-        # is guaranteed by the secondary lexicographic key.
+        # is guaranteed by the secondary lexicographic key. Words rarer than
+        # ``min_count`` fold into <unk> — with tied embeddings a
+        # seen-once word never learns a useful vector anyway.
         counts: dict[str, int] = {}
         for t in tokens:
             counts[t] = counts.get(t, 0) + 1
-        ordered = sorted(counts, key=lambda t: (-counts[t], t))
+        ordered = sorted(
+            (t for t, c in counts.items() if c >= min_count),
+            key=lambda t: (-counts[t], t),
+        )
         return cls(id_to_token=(UNK, *ordered))
 
 
@@ -84,10 +114,16 @@ class Corpus:
     val_ids: torch.Tensor
 
     @classmethod
-    def load(cls, corpus_path: str | Path, val_fraction: float = 0.05) -> Corpus:
-        tokens = tokenize(download_corpus(corpus_path))
+    def load(
+        cls,
+        name: str = "tinystories",
+        data_dir: str | Path = "data",
+        val_fraction: float = 0.05,
+        vocab_min_count: int = 3,
+    ) -> Corpus:
+        tokens = tokenize(download_corpus(name, data_dir))
         split = int(len(tokens) * (1.0 - val_fraction))
-        vocab = Vocab.build(tokens[:split])
+        vocab = Vocab.build(tokens[:split], min_count=vocab_min_count)
         return cls(
             vocab=vocab,
             train_ids=vocab.encode(tokens[:split]),
